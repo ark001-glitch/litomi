@@ -1,51 +1,29 @@
-import type { Context } from 'hono'
-
 import { Hono } from 'hono'
 import { setCookie } from 'hono/cookie'
-import ms from 'ms'
-import { z } from 'zod'
-
 import { Env } from '@/backend'
 import { requireAuth } from '@/backend/middleware/require-auth'
-import { problemResponse } from '@/backend/utils/problem'
-import { zProblemValidator } from '@/backend/utils/validator'
 import { COOKIE_DOMAIN } from '@/constants'
 import { CookieKey } from '@/constants/storage'
-import TurnstileValidator from '@/utils/turnstile'
 
+// 이 부분은 쿠키를 만드는 도구라 지우면 안 됩니다.
 import { POINTS_TURNSTILE_TTL_SECONDS, signPointsTurnstileToken } from '../util-turnstile-cookie'
 
 export type POSTV1PointTurnstileResponse = { verified: true; expiresInSeconds: number }
 
 const route = new Hono<Env>()
 
-const TURNSTILE_VERIFY_TIMEOUT_MS = ms('10 seconds')
-const turnstileValidator = new TurnstileValidator(TURNSTILE_VERIFY_TIMEOUT_MS, 1)
+// 검사 로직(Validator)은 싹 다 제거했습니다.
 
-const requestSchema = z.object({
-  token: z.string().min(1).max(2048),
-})
-
-route.post('/', requireAuth, zProblemValidator('json', requestSchema), async (c) => {
+route.post('/', requireAuth, async (c) => {
+  // 사용자가 누군지는 알아야 쿠키를 구워주니 userId는 가져옵니다.
   const userId = c.get('userId')!
 
-  const { token } = c.req.valid('json')
-  const remoteIP = getRemoteIP(c)
+  // --- [삭제됨] Turnstile 검사 로직 ---
+  // 원래 여기에 있던 "너 사람 맞아?" 하고 물어보는 코드를 다 없앴습니다.
+  // 이제 무조건 통과입니다.
 
-  const turnstile = await turnstileValidator.validate({
-    token,
-    remoteIP,
-    expectedAction: 'points-earn',
-  })
-
-  if (!turnstile.success) {
-    return problemResponse(c, {
-      status: 400,
-      code: 'turnstile-validation-failed',
-      detail: '인증에 실패했어요. 다시 시도해 주세요',
-    })
-  }
-
+  // --- [유지됨] 프리패스권(쿠키) 발급 ---
+  // 이 부분이 중요합니다. 이게 있어야 다음 단계(포인트 적립 등)가 작동합니다.
   const signedCookie = await signPointsTurnstileToken(userId)
 
   setCookie(c, CookieKey.POINTS_TURNSTILE, signedCookie, {
@@ -57,6 +35,7 @@ route.post('/', requireAuth, zProblemValidator('json', requestSchema), async (c)
     secure: true,
   })
 
+  // 성공했다고 프론트엔드에 알려줍니다.
   return c.json<POSTV1PointTurnstileResponse>({
     verified: true,
     expiresInSeconds: POINTS_TURNSTILE_TTL_SECONDS,
@@ -64,7 +43,3 @@ route.post('/', requireAuth, zProblemValidator('json', requestSchema), async (c)
 })
 
 export default route
-
-function getRemoteIP(c: Context<Env>): string {
-  return c.req.header('CF-Connecting-IP') || c.req.header('x-real-ip') || c.req.header('x-forwarded-for') || 'unknown'
-}
